@@ -52,6 +52,7 @@ namespace CoordinateSystem
 
         private Keys clickedKey = Keys.None;
         private ChangeMode changeMode = ChangeMode.None;
+        private Vector3 startCickedPosition;
 
         public MainForm()
         {
@@ -60,10 +61,7 @@ namespace CoordinateSystem
 
         private void panelOpenGL_Paint(object sender, PaintEventArgs e)
         {
-            GL.Viewport(panelOpenGL.ClientRectangle.X,
-              panelOpenGL.ClientRectangle.Y,
-              panelOpenGL.ClientRectangle.Width,
-              panelOpenGL.ClientRectangle.Height);
+            GL.Viewport(panelOpenGL.ClientRectangle);
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
             GL.Enable(EnableCap.DepthTest);
 
@@ -89,14 +87,14 @@ namespace CoordinateSystem
         private void timerUpdateFrame_Tick(object sender, EventArgs e)
         {
             GL.BindBuffer(BufferTarget.ElementArrayBuffer, ibo_elements);
-            GL.BufferData(BufferTarget.ElementArrayBuffer, (IntPtr)(indicedata.Length * sizeof(int)), indicedata, BufferUsageHint.DynamicDraw);
+            GL.BufferData(BufferTarget.ElementArrayBuffer, (IntPtr)(indicedata.Length * sizeof(int)), indicedata, BufferUsageHint.StaticDraw);
 
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo_position);
-            GL.BufferData<Vector3>(BufferTarget.ArrayBuffer, (IntPtr)(vertdata.Length * Vector3.SizeInBytes), vertdata, BufferUsageHint.DynamicDraw);
+            GL.BufferData<Vector3>(BufferTarget.ArrayBuffer, (IntPtr)(vertdata.Length * Vector3.SizeInBytes), vertdata, BufferUsageHint.StaticDraw);
             GL.VertexAttribPointer(attribute_vpos, 3, VertexAttribPointerType.Float, false, 0, 0);
 
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo_color);
-            GL.BufferData<Vector3>(BufferTarget.ArrayBuffer, (IntPtr)(coldata.Length * Vector3.SizeInBytes), coldata, BufferUsageHint.DynamicDraw);
+            GL.BufferData<Vector3>(BufferTarget.ArrayBuffer, (IntPtr)(coldata.Length * Vector3.SizeInBytes), coldata, BufferUsageHint.StaticDraw);
             GL.VertexAttribPointer(attribute_vcol, 3, VertexAttribPointerType.Float, true, 0, 0);
 
             GL.UseProgram(pgmID);
@@ -140,7 +138,7 @@ namespace CoordinateSystem
             rotateCursor = new Cursor(rotateBmp.GetHicon());
             var zoomBmp = new Bitmap(new Bitmap("Icons/zoom.png"), 16, 16);
             scaleCursor = new Cursor(zoomBmp.GetHicon());
-            aspect = (float)panelOpenGL.ClientRectangle.Width / panelOpenGL.ClientRectangle.Height;
+            aspect = panelOpenGL.ClientRectangle.Width / (float)panelOpenGL.ClientRectangle.Height;
 
             initProgram();
             objs = new List<Volume> { new Cube() };
@@ -198,6 +196,7 @@ namespace CoordinateSystem
             if (clickedKey == Keys.Control)
             {
                 changeMode = ChangeMode.Translate;
+                startCickedPosition = getPointerPositionOnObjectPlane(e.Location);
             }
             else if (clickedKey == Keys.Shift)
             {
@@ -248,14 +247,59 @@ namespace CoordinateSystem
                     getScale(e.Location);
                     break;
                 case ChangeMode.Translate:
-                    getTranslate(e.Location);
+                    //getRotateAroundCamera(e.Location);
+                    getTranslation(e.Location);
                     break;
             }
         }
 
-        private void getTranslate(Point endPoint)
+        private void getTranslation(Point endPoint)
         {
-            float adjustPos = (float)Math.Tan(ExtensionGL.Radians(30)) * 0.1f / (panelOpenGL.Height / 2.0f);
+            var endClickedPosition = getPointerPositionOnObjectPlane(endPoint);
+            var dv = endClickedPosition - startCickedPosition;
+            if(dv.Length > float.Epsilon)
+            {
+                currentTrans = new TranslateTransform3D(dv);
+                updateModelMatricies();
+            }
+        }
+
+        private Vector3 getPointerPositionOnObjectPlane(Point endPoint)
+        {
+            // 3D line equation by 2 points camera position "Vc" and near plane position "Vn" (from mouse position) 
+            // V = Vc + t*(a,b,c)
+            // with (a,b,c) = Vn - Vc;
+            float adjustPos = (float)Math.Tan(ExtensionGL.Radians(FOV / 2.0f)) * 0.1f / (panelOpenGL.Height / 2.0f);
+            float dx = (endPoint.X - panelOpenGL.Width / 2);
+            float dy = (endPoint.Y - panelOpenGL.Height / 2);
+            float xn = dx * adjustPos;
+            float yn = -dy * adjustPos;
+            Vector3 vn = new Vector3(xn, yn, camera.Position.Z - ZNEAR);
+            Vector3 vc = camera.Position;
+            Vector3 abc = vn - vc;
+
+            Matrix4 tmpTrans = getPreviousTransform();
+            Vector3 objectOrigin = tmpTrans.ExtractTranslation();
+            Vector3 v = new Vector3();
+            v.Z = objectOrigin.Z;
+
+            float t = (v.Z - vc.Z) / abc.Z;
+            v.X = t * abc.X;
+            v.Y = t * abc.Y;
+            return v;
+        }
+
+        private Matrix4 getPreviousTransform()
+        {
+            Matrix4 preTrans = Matrix4.Identity;
+            foreach (var tr in transforms)
+                preTrans *= tr.Value;
+            return preTrans;
+        }
+
+        private void getRotateAroundCamera(Point endPoint)
+        {
+            float adjustPos = (float)Math.Tan(ExtensionGL.Radians(FOV / 2.0f)) * 0.1f / (panelOpenGL.Height / 2.0f);
             float dx = (endPoint.X - startPoint.X);
             float dy = (endPoint.Y - startPoint.Y);
             float dxmin = panelOpenGL.Width / 100f;
@@ -288,11 +332,9 @@ namespace CoordinateSystem
 
         private void updateModelMatricies()
         {
-            Matrix4 tmpTrans = Matrix4.Identity;
-            foreach (var t in transforms)
-                tmpTrans *= t.Value;
+            Matrix4 preTrans = getPreviousTransform();
             foreach (var v in objs)
-                v.ModelMatrix = tmpTrans * currentTrans.Value;
+                v.ModelMatrix = preTrans * currentTrans.Value;
         }
 
         private void getScale(Point endPoint)
